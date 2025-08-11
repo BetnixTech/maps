@@ -48,7 +48,18 @@
       box-shadow: 0 4px 15px var(--shadow);
       filter: var(--map-filter);
       transition: filter 0.3s;
+      position: relative;
+      background: #e5e5e5;
     }
+    #map.fullscreen {
+      height: 100vh !important;
+      width: 100vw !important;
+      max-width: none;
+      margin: 0;
+      border-radius: 0;
+      z-index: 9999;
+    }
+
     .controls {
       max-width: 960px;
       margin: 1em auto 0;
@@ -256,6 +267,25 @@
       color: white;
     }
 
+    /* Fullscreen toggle button */
+    #fullscreenToggle {
+      background: transparent;
+      color: var(--primary);
+      border: 1.5px solid var(--primary);
+      padding: 0.4rem 1rem;
+      border-radius: 8px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background-color 0.3s ease, color 0.3s ease;
+      user-select: none;
+      flex-shrink: 0;
+      margin-left: 0.5rem;
+    }
+    #fullscreenToggle:hover {
+      background: var(--primary);
+      color: white;
+    }
+
     /* Responsive */
     @media (max-width: 640px) {
       .controls {
@@ -268,6 +298,10 @@
         font-size: 0.85rem;
         padding: 0.3rem 0.6rem;
       }
+      #fullscreenToggle {
+        margin-left: 0;
+        margin-top: 0.5rem;
+      }
     }
   </style>
 </head>
@@ -278,6 +312,7 @@
     <button id="searchBtn" aria-label="Search location">Search</button>
     <button id="routeBtn" aria-label="Show directions">Show Directions</button>
     <button id="themeToggle" aria-pressed="false" title="Toggle light/dark mode">🌗</button>
+    <button id="fullscreenToggle" aria-pressed="false" title="Toggle fullscreen map">⛶ Fullscreen</button>
   </div>
 
   <ul id="autocomplete-list" class="autocomplete-list" role="listbox" aria-label="Search suggestions" hidden></ul>
@@ -311,62 +346,13 @@
   <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
 
   <script>
-    (() => {
+    (function() {
+      // Map init
       const map = L.map('map', { center: [20, 0], zoom: 2 });
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         maxZoom: 19,
         attribution: '© OpenStreetMap contributors'
       }).addTo(map);
-
-      // Traffic tiles overlay (optional)
-      const trafficLayer = L.tileLayer('https://tile.openstreetmap.jp/tiles/transport/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: '© OpenStreetMap Traffic'
-      });
-
-      let trafficEnabled = false;
-
-      // Toggle traffic layer
-      function toggleTraffic() {
-        if (trafficEnabled) {
-          map.removeLayer(trafficLayer);
-          trafficEnabled = false;
-        } else {
-          map.addLayer(trafficLayer);
-          trafficEnabled = true;
-        }
-      }
-
-      // Dark mode toggle
-      const themeToggleBtn = document.getElementById('themeToggle');
-      function setTheme(theme) {
-        document.body.classList.remove('light', 'dark');
-        document.body.classList.add(theme);
-        themeToggleBtn.setAttribute('aria-pressed', theme === 'dark');
-        localStorage.setItem('geoTheme', theme);
-      }
-      themeToggleBtn.addEventListener('click', () => {
-        const current = document.body.classList.contains('dark') ? 'dark' : 'light';
-        setTheme(current === 'dark' ? 'light' : 'dark');
-      });
-
-      // Initialize theme from storage
-      const savedTheme = localStorage.getItem('geoTheme');
-      setTheme(savedTheme === 'dark' ? 'dark' : 'light');
-
-      // User location
-      let userLocation = null;
-      navigator.geolocation.getCurrentPosition(
-        pos => {
-          userLocation = [pos.coords.latitude, pos.coords.longitude];
-          L.marker(userLocation).addTo(map).bindPopup('Your Location').openPopup();
-        },
-        err => {
-          console.warn('Geolocation error:', err);
-          // No alert here, silent fail
-        },
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-      );
 
       // Elements
       const queryInput = document.getElementById('query');
@@ -386,11 +372,16 @@
       const directionsPanel = document.getElementById('directionsPanel');
       const directionsStepsDiv = document.getElementById('directionsSteps');
 
+      const themeToggleBtn = document.getElementById('themeToggle');
+      const fullscreenToggleBtn = document.getElementById('fullscreenToggle');
+
+      // Variables
       let marker;
       let currentLocation = null;
       let routingControl;
+      let userLocation = null;
 
-      // Utility: debounce
+      // Helper debounce function
       function debounce(fn, delay) {
         let timer;
         return (...args) => {
@@ -399,7 +390,7 @@
         };
       }
 
-      // Update URL query param
+      // Update URL query param without reload
       function updateUrlQuery(q) {
         const newUrl = new URL(window.location);
         if (q) {
@@ -410,11 +401,12 @@
         window.history.replaceState(null, '', newUrl.toString());
       }
 
-      // Fetch autocomplete suggestions (limit 5)
+      // Autocomplete fetch
       async function fetchSuggestions(query) {
         if (!query) {
           autocompleteList.hidden = true;
           autocompleteList.innerHTML = '';
+          queryInput.setAttribute('aria-expanded', 'false');
           return;
         }
         try {
@@ -424,23 +416,25 @@
           if (results.length === 0) {
             autocompleteList.hidden = true;
             autocompleteList.innerHTML = '';
+            queryInput.setAttribute('aria-expanded', 'false');
             return;
           }
           autocompleteList.innerHTML = results.map((item, i) => `
             <li role="option" tabindex="0" data-lat="${item.lat}" data-lon="${item.lon}" data-display="${item.display_name}">${item.display_name}</li>
           `).join('');
           autocompleteList.hidden = false;
+          queryInput.setAttribute('aria-expanded', 'true');
         } catch {
           autocompleteList.hidden = true;
           autocompleteList.innerHTML = '';
+          queryInput.setAttribute('aria-expanded', 'false');
         }
       }
 
-      // Click or keyboard on autocomplete list
+      // Handle autocomplete selection
       autocompleteList.addEventListener('click', e => {
         if (e.target.tagName.toLowerCase() === 'li') {
-          const li = e.target;
-          selectAutocomplete(li);
+          selectAutocomplete(e.target);
         }
       });
       autocompleteList.addEventListener('keydown', e => {
@@ -492,7 +486,6 @@
 
         if (!runFromUrl) updateUrlQuery(query);
 
-        // If query looks like coords
         if (/^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$/.test(query)) {
           const [lat, lon] = query.split(',').map(Number);
           const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json`;
@@ -507,7 +500,6 @@
           return;
         }
 
-        // Normal search
         const url = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`;
         try {
           const res = await fetch(url);
@@ -523,7 +515,7 @@
         }
       }
 
-      // Save to localStorage lists
+      // Save to lists
       function saveToList(key) {
         if (!currentLocation) return alert('Search for a location first!');
         const list = JSON.parse(localStorage.getItem(key) || '[]');
@@ -537,14 +529,12 @@
         }
       }
 
-      // Render saved locations lists
       function renderSavedLists() {
         renderList('favorites', favoritesListDiv);
         renderList('wantToGo', wantToGoListDiv);
         renderList('starred', starredListDiv);
       }
 
-      // Render one list UI
       function renderList(key, container) {
         const list = JSON.parse(localStorage.getItem(key) || '[]');
         if (!list.length) {
@@ -574,7 +564,7 @@
         });
       }
 
-      // Directions with leaflet-routing-machine
+      // Directions using routing machine
       function showRoute() {
         if (!userLocation) {
           navigator.geolocation.getCurrentPosition(
@@ -648,21 +638,20 @@
         });
       }
 
-      // Map icon SVG paths for instruction types (simplified)
       function getIconPath(type) {
         switch(type) {
-          case 'Straight': return 'M12 2 L12 22'; // simple vertical line
-          case 'Left': return 'M16 4 L8 12 L16 20'; // left arrow
-          case 'Right': return 'M8 4 L16 12 L8 20'; // right arrow
-          case 'SlightLeft': return 'M14 4 L8 12 L14 20'; // slight left arrow
-          case 'SlightRight': return 'M10 4 L16 12 L10 20'; // slight right arrow
-          case 'UTurnLeft': return 'M16 4 A4 4 0 1 1 8 12'; // U-turn left arc
-          case 'UTurnRight': return 'M8 4 A4 4 0 1 0 16 12'; // U-turn right arc
-          default: return 'M12 2 L12 22'; // fallback straight
+          case 'Straight': return 'M12 2 L12 22';
+          case 'Left': return 'M16 4 L8 12 L16 20';
+          case 'Right': return 'M8 4 L16 12 L8 20';
+          case 'SlightLeft': return 'M14 4 L8 12 L14 20';
+          case 'SlightRight': return 'M10 4 L16 12 L10 20';
+          case 'UTurnLeft': return 'M16 4 A4 4 0 1 1 8 12';
+          case 'UTurnRight': return 'M8 4 A4 4 0 1 0 16 12';
+          default: return 'M12 2 L12 22';
         }
       }
 
-      // Copy link button
+      // Copy link to clipboard
       copyLinkBtn.addEventListener('click', () => {
         navigator.clipboard.writeText(window.location.href).then(() => {
           alert('Permalink copied to clipboard!');
@@ -676,22 +665,25 @@
         fetchSuggestions(e.target.value);
       }, 400));
 
-      // Hide autocomplete when clicking outside
+      // Hide autocomplete on outside click
       document.addEventListener('click', e => {
         if (!autocompleteList.contains(e.target) && e.target !== queryInput) {
           autocompleteList.hidden = true;
+          queryInput.setAttribute('aria-expanded', 'false');
         }
       });
 
-      // Events
+      // Event listeners
       searchBtn.addEventListener('click', () => {
         autocompleteList.hidden = true;
+        queryInput.setAttribute('aria-expanded', 'false');
         searchLocation();
       });
       routeBtn.addEventListener('click', showRoute);
       queryInput.addEventListener('keypress', e => {
         if (e.key === 'Enter') {
           autocompleteList.hidden = true;
+          queryInput.setAttribute('aria-expanded', 'false');
           searchLocation();
         }
       });
@@ -699,16 +691,79 @@
       wantBtn.addEventListener('click', () => saveToList('wantToGo'));
       starBtn.addEventListener('click', () => saveToList('starred'));
 
-      // Load saved lists on startup
-      renderSavedLists();
+      // Theme toggle
+      themeToggleBtn.addEventListener('click', () => {
+        if (document.body.classList.contains('light')) {
+          document.body.classList.replace('light', 'dark');
+          themeToggleBtn.setAttribute('aria-pressed', 'true');
+        } else {
+          document.body.classList.replace('dark', 'light');
+          themeToggleBtn.setAttribute('aria-pressed', 'false');
+        }
+      });
 
-      // On page load: load from ?q= if exists
-      const urlParams = new URLSearchParams(window.location.search);
-      const qParam = urlParams.get('q');
-      if (qParam) {
-        queryInput.value = qParam;
-        searchLocation(true);
+      // Fullscreen toggle
+      fullscreenToggleBtn.addEventListener('click', () => {
+        const mapEl = document.getElementById('map');
+        if (!document.fullscreenElement) {
+          mapEl.requestFullscreen().then(() => {
+            mapEl.classList.add('fullscreen');
+            fullscreenToggleBtn.setAttribute('aria-pressed', 'true');
+            fullscreenToggleBtn.textContent = '❎ Exit Fullscreen';
+            map.invalidateSize();
+          }).catch(console.error);
+        } else {
+          document.exitFullscreen().then(() => {
+            mapEl.classList.remove('fullscreen');
+            fullscreenToggleBtn.setAttribute('aria-pressed', 'false');
+            fullscreenToggleBtn.textContent = '⛶ Fullscreen';
+            map.invalidateSize();
+          }).catch(console.error);
+        }
+      });
+
+      // When fullscreen changes (user presses ESC or other)
+      document.addEventListener('fullscreenchange', () => {
+        const mapEl = document.getElementById('map');
+        if (!document.fullscreenElement) {
+          mapEl.classList.remove('fullscreen');
+          fullscreenToggleBtn.setAttribute('aria-pressed', 'false');
+          fullscreenToggleBtn.textContent = '⛶ Fullscreen';
+          map.invalidateSize();
+        }
+      });
+
+      // Initial load from URL param
+      function loadFromUrl() {
+        const params = new URLSearchParams(window.location.search);
+        const q = params.get('q');
+        if (q) {
+          queryInput.value = q;
+          searchLocation(true);
+        }
       }
+
+      // Initialize
+      function init() {
+        loadFromUrl();
+        renderSavedLists();
+
+        // Try to get user location
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            pos => {
+              userLocation = [pos.coords.latitude, pos.coords.longitude];
+              L.marker(userLocation).addTo(map).bindPopup('Your Location').openPopup();
+            },
+            err => {
+              console.warn('Geolocation failed or permission denied.');
+            },
+            { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+          );
+        }
+      }
+
+      init();
 
     })();
   </script>
